@@ -513,3 +513,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .hero-choice-list { max-height: 42vh; }
   .hero-choice { min-height: 46px; padding: 7px 8px; }
 }
+.hero-choice[hidden] {
+  display: none;
+}
