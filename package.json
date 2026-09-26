@@ -1,0 +1,13 @@
+{
+  "name": "shuaitu-score-calculator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "率土之滨大小保底卡包收益计算器",
+  "scripts": {
+    "dev": "node scripts/dev-server.js",
+    "test": "node --test",
+    "check": "node --check app.js && node --check src/roster.js && node --check src/model.js && node --check src/db.js && node --check src/image.js"
+  }
+}
+
