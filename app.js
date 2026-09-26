@@ -11,9 +11,11 @@ import {
   createId,
   createInitialState,
   deleteHeroFromState,
+  normalizeGuaranteeMark,
   normalizeScore,
   rankPacks,
   removeHeroFromPack,
+  syncGuaranteeMarksToRegularPacks,
 } from './src/model.js';
 import { ROSTER_GROUPS } from './src/roster.js';
 import {
@@ -338,16 +340,18 @@ function renderRosterFilters() {
 
 function renderHeroesPage() {
   const heroes = heroesInCurrentGroup();
+  const markedCount = state.heroes.filter((hero) => normalizeGuaranteeMark(hero.guaranteeMark)).length;
   app.innerHTML = `
     <section class="page heroes-page">
       <div class="page-head">
         <div>
           <p class="eyebrow">WARRIOR SCORES</p>
           <h1 class="page-title">武将管理</h1>
-          <p class="page-subtitle">按阵营筛选武将，用“− / ＋”调整 1–4 分。“未评”不参与平均，明确的 1 分会正常参与计算。</p>
+          <p class="page-subtitle">用“− / ＋”调整分值；点击保底按钮在“未标 → 小保底 → 大保底”之间循环。一键导入会同步到四个常规卡包。</p>
         </div>
         <div class="page-actions">
-          <button class="button primary" type="button" data-action="add-hero">＋ 新增武将</button>
+          <button class="button primary" type="button" data-action="import-guarantee-marks">一键导入常规卡包${markedCount ? `（${markedCount}）` : ''}</button>
+          <button class="button ghost" type="button" data-action="add-hero">＋ 新增武将</button>
         </div>
       </div>
       ${renderRosterFilters()}
@@ -367,6 +371,7 @@ function renderHeroManagerRow(hero) {
   const score = normalizeScore(hero.score);
   const groupLabel = rosterGroupLabel(hero.rosterGroup);
   const scoreText = score ? scoreLabel(score).split(' · ')[1] : '不参与平均';
+  const guaranteeMark = normalizeGuaranteeMark(hero.guaranteeMark);
   return `
     <article class="hero-manager-card" data-hero-search="${escapeHtml(`${hero.name} ${hero.faction ?? ''} ${groupLabel}`.toLocaleLowerCase('zh-CN'))}">
       <div class="hero-manager-top">
@@ -386,6 +391,12 @@ function renderHeroManagerRow(hero) {
         </div>
         <button type="button" data-action="adjust-score" data-hero-id="${escapeHtml(hero.id)}" data-delta="1" ${score === 4 ? 'disabled' : ''} title="提高分值">＋</button>
       </div>
+      <button class="guarantee-mark ${guaranteeMark ?? 'unmarked'}" type="button"
+        data-action="cycle-guarantee-mark" data-hero-id="${escapeHtml(hero.id)}"
+        title="点击切换：未标 → 小保底 → 大保底">
+        <span>保底</span>
+        <strong>${guaranteeMark === 'small' ? '小' : guaranteeMark === 'big' ? '大' : '未标'}</strong>
+      </button>
       <div class="hero-manager-actions">
         <button type="button" data-action="upload-portrait" data-hero-id="${escapeHtml(hero.id)}" title="${portraitUrls.has(hero.id) ? '更换本地立绘' : '导入本地立绘'}">${portraitUrls.has(hero.id) ? '换图' : '立绘'}</button>
         ${portraitUrls.has(hero.id) ? `<button type="button" data-action="remove-portrait" data-hero-id="${escapeHtml(hero.id)}" title="移除本地立绘">撤图</button>` : ''}
@@ -522,6 +533,32 @@ async function setHeroScore(heroId, rawScore) {
   await commit(nextState);
 }
 
+async function cycleGuaranteeMark(heroId) {
+  const nextState = cloneState(state);
+  const hero = nextState.heroes.find((item) => item.id === heroId);
+  if (!hero) return;
+  const current = normalizeGuaranteeMark(hero.guaranteeMark);
+  hero.guaranteeMark = current === null ? 'small' : current === 'small' ? 'big' : null;
+  await commit(nextState);
+}
+
+async function importGuaranteeMarksToPacks() {
+  const markedHeroes = state.heroes.filter((hero) => normalizeGuaranteeMark(hero.guaranteeMark));
+  if (markedHeroes.length === 0) {
+    showToast('还没有标记任何小保底或大保底武将', 'error');
+    return;
+  }
+
+  const smallCount = markedHeroes.filter((hero) => hero.guaranteeMark === 'small').length;
+  const bigCount = markedHeroes.filter((hero) => hero.guaranteeMark === 'big').length;
+  const confirmed = window.confirm(
+    `将按当前标记覆盖东吴、魏晋、蜀汉、群雄四个常规卡包名单。\n小保底 ${smallCount} 人，大保底 ${bigCount} 人。是否继续？`
+  );
+  if (!confirmed) return;
+
+  await commit(syncGuaranteeMarksToRegularPacks(state));
+  showToast(`已导入：小保底 ${smallCount} 人，大保底 ${bigCount} 人`);
+}
 async function adjustHeroScore(heroId, deltaValue) {
   const delta = Number(deltaValue);
   const nextState = cloneState(state);
@@ -568,6 +605,7 @@ function openAddHeroDialog() {
         rosterGroup: String(formData.get('rosterGroup') ?? 'other'),
         faction: String(formData.get('faction') ?? '').trim() || null,
         score: normalizeScore(formData.get('score')),
+        guaranteeMark: null,
       });
       await commit(nextState);
       showToast(`已新增武将：${name}`);
@@ -721,12 +759,13 @@ async function removePack(packId) {
 function openAddToPoolDialog(packId, side) {
   const pack = state.packs.find((item) => item.id === packId);
   if (!pack) return;
-  const sideKey = side === 'small' ? 'smallHeroIds' : 'bigHeroIds';
-  const oppositeKey = side === 'small' ? 'bigHeroIds' : 'smallHeroIds';
   const assigned = new Set([...pack.smallHeroIds, ...pack.bigHeroIds]);
   const available = state.heroes
     .filter((hero) => !assigned.has(hero.id))
-    .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+    .sort((left, right) => {
+      const groupCompare = rosterGroupLabel(left.rosterGroup).localeCompare(rosterGroupLabel(right.rosterGroup), 'zh-CN');
+      return groupCompare || left.name.localeCompare(right.name, 'zh-CN');
+    });
   const sideLabel = side === 'small' ? '小保底' : '大保底';
 
   if (state.heroes.length === 0) {
@@ -734,7 +773,7 @@ function openAddToPoolDialog(packId, side) {
     return;
   }
   if (available.length === 0) {
-    showToast(`没有可加入的武将，当前卡包名单已包含全部武将`, 'error');
+    showToast('没有可加入的武将，当前卡包名单已包含全部武将', 'error');
     return;
   }
 
@@ -744,12 +783,29 @@ function openAddToPoolDialog(packId, side) {
     submitText: '添加',
     body: `
       <div class="form-field">
-        <label for="pool-hero">选择武将</label>
-        <select class="form-select" id="pool-hero" name="heroId" required>
-          <option value="">请选择武将</option>
-          ${available.map((hero) => `<option value="${escapeHtml(hero.id)}">${escapeHtml(hero.name)} · ${scoreLabel(normalizeScore(hero.score))}</option>`).join('')}
-        </select>
-        <span class="form-hint">已在相反名单中的武将不会出现在选项中。</span>
+        <label for="pool-hero-search">搜索并选择武将</label>
+        <div class="pool-search-wrap">
+          <input class="form-input" id="pool-hero-search" type="search" autocomplete="off"
+            placeholder="输入武将名或阵营，例如：孙权、魏晋、蜀汉" data-role="pool-hero-search" />
+          <span data-role="pool-visible-count">${available.length} 名</span>
+        </div>
+        <div class="hero-choice-list" data-role="pool-hero-list">
+          ${available.map((hero) => {
+            const groupLabel = rosterGroupLabel(hero.rosterGroup);
+            const searchText = `${hero.name} ${hero.faction ?? ''} ${groupLabel}`.toLocaleLowerCase('zh-CN');
+            return `
+              <label class="hero-choice" data-search="${escapeHtml(searchText)}">
+                <input type="radio" name="heroId" value="${escapeHtml(hero.id)}" />
+                <span class="hero-choice-main">
+                  <strong>${escapeHtml(hero.name)}</strong>
+                  <small>${escapeHtml(groupLabel)} · ${scoreLabel(normalizeScore(hero.score))}</small>
+                </span>
+                <span class="hero-choice-group">${escapeHtml(groupLabel)}</span>
+              </label>`;
+          }).join('')}
+        </div>
+        <div class="pool-search-empty" data-role="pool-search-empty" hidden>没有找到匹配的武将</div>
+        <span class="form-hint">已在当前卡包任一保底名单中的武将不会出现在列表中。</span>
       </div>`,
     onSubmit: async (formData) => {
       const heroId = String(formData.get('heroId'));
@@ -759,6 +815,24 @@ function openAddToPoolDialog(packId, side) {
       showToast(`已将${hero?.name ?? '武将'}加入${sideLabel}名单`);
     },
   });
+
+  const searchInput = dialog.querySelector('[data-role="pool-hero-search"]');
+  const choices = [...dialog.querySelectorAll('.hero-choice')];
+  const countElement = dialog.querySelector('[data-role="pool-visible-count"]');
+  const emptyElement = dialog.querySelector('[data-role="pool-search-empty"]');
+  const filterChoices = () => {
+    const keyword = searchInput.value.trim().toLocaleLowerCase('zh-CN');
+    let visibleCount = 0;
+    for (const choice of choices) {
+      const visible = !keyword || choice.dataset.search.includes(keyword);
+      choice.hidden = !visible;
+      if (visible) visibleCount++;
+    }
+    countElement.textContent = `${visibleCount} 名`;
+    emptyElement.hidden = visibleCount > 0;
+  };
+  searchInput.addEventListener('input', filterChoices);
+  window.setTimeout(() => searchInput.focus(), 30);
 }
 
 async function removeFromPool(packId, side, heroId) {
@@ -780,6 +854,8 @@ app.addEventListener('click', async (event) => {
   try {
     if (action === 'set-score') await setHeroScore(heroId, target.dataset.score);
     else if (action === 'adjust-score') await adjustHeroScore(heroId, target.dataset.delta);
+    else if (action === 'cycle-guarantee-mark') await cycleGuaranteeMark(heroId);
+    else if (action === 'import-guarantee-marks') await importGuaranteeMarksToPacks();
     else if (action === 'filter-heroes') {
       heroGroupFilter = target.dataset.group || 'all';
       renderHeroesPage();
@@ -806,6 +882,11 @@ app.addEventListener('input', (event) => {
 });
 
 initialize();
+
+
+
+
+
 
 
 

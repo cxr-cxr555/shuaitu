@@ -7,9 +7,12 @@ import {
   assertUniquePackName,
   computePoolScore,
   createInitialState,
+  getRosterGroupForPack,
+  normalizeGuaranteeMark,
   deleteHeroFromState,
   migrateState,
   rankPacks,
+  syncGuaranteeMarksToRegularPacks,
 } from '../src/model.js';
 
 const hero = (id, name, score = null) => ({ id, name, score });
@@ -117,6 +120,7 @@ test('默认预置四个常规卡包、六个赛季卡包和 133 名五星武将
   assert.ok(state.packs.every((item) => item.smallHeroIds.length === 0 && item.bigHeroIds.length === 0));
   assert.equal(state.heroes.length, 133);
   assert.ok(state.heroes.every((item) => item.score === null));
+  assert.ok(state.heroes.every((item) => item.guaranteeMark === null));
   assert.equal(state.heroes.filter((item) => item.rosterGroup === 'dongwu').length, 26);
   assert.equal(state.heroes.filter((item) => item.rosterGroup === 'weijin').length, 34);
   assert.equal(state.heroes.filter((item) => item.rosterGroup === 'shuhan').length, 44);
@@ -134,7 +138,7 @@ test('旧版本数据升级时替换为修正后的名册，同时保留可匹�
     packs: [{ id: 'p1', name: '东吴', category: 'regular', order: 0, smallHeroIds: ['custom'], bigHeroIds: [] }],
   };
   const migrated = migrateState(legacyState);
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 4);
   assert.equal(migrated.heroes.length, 133);
   assert.equal(migrated.heroes.find((item) => item.name === '孙权').score, 4);
   assert.equal(migrated.packs[0].smallHeroIds.length, 1);
@@ -146,6 +150,36 @@ test('武将名和分类内卡包名按忽略大小写去重', () => {
   const packs = [{ id: 'p1', name: '东吴', category: 'regular' }];
   assert.throws(() => assertUniqueHeroName(heroes, 'sp赵云'), /同名武将/);
   assert.throws(() => assertUniquePackName(packs, '东吴', 'regular'), /同名卡包/);
+});
+
+
+
+test('常规卡包能映射到对应武将阵营，赛季卡包不限制阵营', () => {
+  const state = createInitialState(1);
+  assert.equal(getRosterGroupForPack(state.packs.find((pack) => pack.id === 'regular-wu')), 'dongwu');
+  assert.equal(getRosterGroupForPack(state.packs.find((pack) => pack.id === 'regular-wei-jin')), 'weijin');
+  assert.equal(getRosterGroupForPack(state.packs.find((pack) => pack.id === 'regular-shu-han')), 'shuhan');
+  assert.equal(getRosterGroupForPack(state.packs.find((pack) => pack.id === 'seasonal-conquest-1')), null);
+  assert.equal(normalizeGuaranteeMark('small'), 'small');
+  assert.equal(normalizeGuaranteeMark('bad'), null);
+});
+
+test('一键导入会将武将标记同步到对应常规卡包', () => {
+  const state = createInitialState(1);
+  const dongwuSmall = state.heroes.find((hero) => hero.rosterGroup === 'dongwu' && hero.name === '孙权');
+  const dongwuBig = state.heroes.find((hero) => hero.rosterGroup === 'dongwu' && hero.name === 'xp孙权');
+  const weijinBig = state.heroes.find((hero) => hero.rosterGroup === 'weijin' && hero.name === '魏曹操');
+  dongwuSmall.guaranteeMark = 'small';
+  dongwuBig.guaranteeMark = 'big';
+  weijinBig.guaranteeMark = 'big';
+
+  const next = syncGuaranteeMarksToRegularPacks(state);
+  const wuPack = next.packs.find((pack) => pack.id === 'regular-wu');
+  const weijinPack = next.packs.find((pack) => pack.id === 'regular-wei-jin');
+  assert.deepEqual(wuPack.smallHeroIds, [dongwuSmall.id]);
+  assert.deepEqual(wuPack.bigHeroIds, [dongwuBig.id]);
+  assert.deepEqual(weijinPack.bigHeroIds, [weijinBig.id]);
+  assert.equal(new Set([...wuPack.smallHeroIds, ...wuPack.bigHeroIds]).size, 2);
 });
 
 

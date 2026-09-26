@@ -1,6 +1,6 @@
 import { DEFAULT_HEROES } from './roster.js';
 
-export const APP_VERSION = 3;
+export const APP_VERSION = 4;
 
 export const CATEGORY_META = Object.freeze({
   regular: {
@@ -19,6 +19,35 @@ export const CATEGORY_META = Object.freeze({
   },
 });
 
+const PACK_ROSTER_GROUP = Object.freeze({
+  'regular-wu': 'dongwu',
+  'regular-wei-jin': 'weijin',
+  'regular-shu-han': 'shuhan',
+  'regular-qun-xiong': 'qunxiong',
+});
+
+export function getRosterGroupForPack(pack) {
+  if (!pack) return null;
+  if (PACK_ROSTER_GROUP[pack.id]) return PACK_ROSTER_GROUP[pack.id];
+  if (pack.category !== 'regular') return null;
+
+  const name = String(pack.name ?? '');
+  if (name.includes('东吴')) return 'dongwu';
+  if (name.includes('魏晋')) return 'weijin';
+  if (name.includes('蜀汉')) return 'shuhan';
+  if (name.includes('群雄')) return 'qunxiong';
+  return null;
+}
+const REGULAR_PACK_BY_ROSTER_GROUP = Object.freeze({
+  dongwu: 'regular-wu',
+  weijin: 'regular-wei-jin',
+  shuhan: 'regular-shu-han',
+  qunxiong: 'regular-qun-xiong',
+});
+
+export function normalizeGuaranteeMark(value) {
+  return value === 'small' || value === 'big' ? value : null;
+}
 export const SCORE_OPTIONS = Object.freeze([
   { value: 1, label: '无用', shortLabel: '无用', description: '当前阵容中没有使用价值' },
   { value: 2, label: '能加红', shortLabel: '加红', description: '能加红，或只有边际价值' },
@@ -43,7 +72,7 @@ export function createInitialState(now = Date.now()) {
   return {
     version: APP_VERSION,
     updatedAt: now,
-    heroes: DEFAULT_HEROES.map((hero) => ({ ...hero })),
+    heroes: DEFAULT_HEROES.map((hero) => ({ ...hero, guaranteeMark: null })),
     packs: DEFAULT_PACKS.map((pack) => ({
       ...pack,
       smallHeroIds: [],
@@ -85,6 +114,13 @@ export function migrateState(state) {
       ...pack,
       smallHeroIds: pack.smallHeroIds.map((id) => idMap.get(id) ?? id),
       bigHeroIds: pack.bigHeroIds.map((id) => idMap.get(id) ?? id),
+    }));
+  }
+
+  if (previousVersion < 4) {
+    nextState.heroes = nextState.heroes.map((hero) => ({
+      ...hero,
+      guaranteeMark: normalizeGuaranteeMark(hero.guaranteeMark),
     }));
   }
 
@@ -267,6 +303,25 @@ export function removeHeroFromPack(state, packId, side, heroId) {
   return nextState;
 }
 
+export function syncGuaranteeMarksToRegularPacks(state) {
+  const nextState = cloneState(state);
+
+  for (const [rosterGroup, packId] of Object.entries(REGULAR_PACK_BY_ROSTER_GROUP)) {
+    const pack = nextState.packs.find((item) => item.id === packId);
+    if (!pack) continue;
+
+    const groupHeroes = nextState.heroes.filter((hero) => (hero.rosterGroup ?? 'other') === rosterGroup);
+    pack.smallHeroIds = groupHeroes
+      .filter((hero) => normalizeGuaranteeMark(hero.guaranteeMark) === 'small')
+      .map((hero) => hero.id);
+    pack.bigHeroIds = groupHeroes
+      .filter((hero) => normalizeGuaranteeMark(hero.guaranteeMark) === 'big')
+      .map((hero) => hero.id);
+  }
+
+  nextState.updatedAt = Date.now();
+  return nextState;
+}
 export function deleteHeroFromState(state, heroId) {
   const nextState = cloneState(state);
   nextState.heroes = nextState.heroes.filter((hero) => hero.id !== heroId);
@@ -278,6 +333,11 @@ export function deleteHeroFromState(state, heroId) {
   nextState.updatedAt = Date.now();
   return nextState;
 }
+
+
+
+
+
 
 
 
